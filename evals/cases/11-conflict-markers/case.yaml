@@ -1,0 +1,11 @@
+name: 11-conflict-markers
+description: Permission set committed with unresolved merge conflict markers.
+changes:
+- status: M
+  path: force-app/main/default/permissionsets/Invoice_Admin.permissionset-meta.xml
+  lines: 10
+expect:
+  lane: human-in-the-loop
+  blocked: true
+  rules:
+  - CONF001

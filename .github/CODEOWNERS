@@ -1,0 +1,29 @@
+# Code-owner review is required on protected branches (int, qa, uat, main).
+# Paths NOT listed here (reports, dashboards, list views, layouts, labels,
+# static resources) have no owner, so agentic-lane PRs can auto-merge once
+# checks pass. Business sign-off is separate: GitHub Environments, not CODEOWNERS.
+
+# Code: AI-assisted lane
+/force-app/**/classes/            @your-org/salesforce-engineers
+/force-app/**/triggers/           @your-org/salesforce-engineers
+/force-app/**/lwc/                @your-org/salesforce-engineers
+/force-app/**/aura/               @your-org/salesforce-engineers
+/force-app/**/flows/              @your-org/salesforce-engineers
+/force-app/**/objects/**/fields/  @your-org/salesforce-engineers
+/force-app/**/objects/**/validationRules/ @your-org/salesforce-engineers
+/force-app/**/objects/*/*.object-meta.xml @your-org/salesforce-engineers
+
+# Access and security: human-in-the-loop lane
+/force-app/**/profiles/           @your-org/salesforce-engineers @your-org/security
+/force-app/**/permissionsets/     @your-org/salesforce-engineers @your-org/security
+/force-app/**/sharingRules/       @your-org/salesforce-engineers @your-org/security
+/force-app/**/namedCredentials/   @your-org/security
+/force-app/**/connectedApps/      @your-org/security
+/force-app/**/settings/           @your-org/security
+/manifest/destructiveChanges*.xml @your-org/salesforce-engineers
+
+# The pipeline itself
+/.github/                         @your-org/devops
+/agentops.yaml                    @your-org/devops
+/cmd/                             @your-org/devops
+/internal/                        @your-org/devops

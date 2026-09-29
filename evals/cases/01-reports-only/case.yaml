@@ -1,0 +1,13 @@
+name: 01-reports-only
+description: 'Report and list view only: safe for the agentic lane.'
+changes:
+- status: M
+  path: force-app/main/default/reports/Finance/Open_Invoices.report-meta.xml
+  lines: 10
+- status: M
+  path: force-app/main/default/objects/Invoice__c/listViews/All_Open.listView-meta.xml
+  lines: 10
+expect:
+  lane: agentic
+  blocked: false
+  rules: []

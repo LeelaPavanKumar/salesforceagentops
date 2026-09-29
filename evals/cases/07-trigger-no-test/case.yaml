@@ -1,0 +1,14 @@
+name: 07-trigger-no-test
+description: New trigger with no test class anywhere in the repo.
+changes:
+- status: A
+  path: force-app/main/default/triggers/InvoiceTrigger.trigger
+  lines: 20
+- status: A
+  path: force-app/main/default/triggers/InvoiceTrigger.trigger-meta.xml
+  lines: 20
+expect:
+  lane: ai-assisted
+  blocked: true
+  rules:
+  - APEX001

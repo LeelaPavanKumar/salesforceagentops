@@ -1,0 +1,10 @@
+name: 14-sox-scoped-object
+description: 'New field on a SOX-scoped revenue object: always human-in-the-loop.'
+changes:
+- status: A
+  path: force-app/main/default/objects/Revenue_Schedule__c/fields/Recognition_Date__c.field-meta.xml
+  lines: 20
+expect:
+  lane: human-in-the-loop
+  blocked: false
+  rules: []

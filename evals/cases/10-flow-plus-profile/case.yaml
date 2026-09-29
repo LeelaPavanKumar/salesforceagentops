@@ -1,0 +1,14 @@
+name: 10-flow-plus-profile
+description: 'Clean flow mixed with a profile change: the profile drives the lane.'
+changes:
+- status: M
+  path: force-app/main/default/flows/Invoice_Mark_Paid.flow-meta.xml
+  lines: 10
+- status: M
+  path: force-app/main/default/profiles/Finance User.profile-meta.xml
+  lines: 10
+expect:
+  lane: human-in-the-loop
+  blocked: false
+  rules:
+  - PERM001

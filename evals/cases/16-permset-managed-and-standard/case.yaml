@@ -1,0 +1,10 @@
+name: 16-permset-managed-and-standard
+description: 'Permission set references managed-package and existing fields only: no false positive.'
+changes:
+- status: M
+  path: force-app/main/default/permissionsets/Invoice_Admin.permissionset-meta.xml
+  lines: 10
+expect:
+  lane: human-in-the-loop
+  blocked: false
+  rules: []

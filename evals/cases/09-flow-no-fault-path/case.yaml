@@ -1,0 +1,11 @@
+name: 09-flow-no-fault-path
+description: Record-triggered flow updates records with no fault connector.
+changes:
+- status: M
+  path: force-app/main/default/flows/Invoice_Mark_Paid.flow-meta.xml
+  lines: 10
+expect:
+  lane: ai-assisted
+  blocked: false
+  rules:
+  - FLOW001

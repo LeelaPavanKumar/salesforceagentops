@@ -1,0 +1,13 @@
+name: 15-apex-clean
+description: Apex change with its test class, current API version.
+changes:
+- status: M
+  path: force-app/main/default/classes/InvoiceService.cls
+  lines: 10
+- status: M
+  path: force-app/main/default/classes/InvoiceServiceTest.cls
+  lines: 10
+expect:
+  lane: ai-assisted
+  blocked: false
+  rules: []

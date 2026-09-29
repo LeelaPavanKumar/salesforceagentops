@@ -1,0 +1,88 @@
+# Appends one entry to the hash-chained audit log on the "audit" branch.
+# Only this workflow writes to that branch (protect it so only
+# github-actions[bot] can push). Runs are serialized so the chain never forks.
+name: audit-append
+
+on:
+  workflow_call:
+    inputs:
+      event: { type: string, required: true }
+      pr: { type: string, default: "0" }
+      commit: { type: string, default: "" }
+      author: { type: string, default: "" }
+      branch: { type: string, default: "" }
+      target_org: { type: string, default: "" }
+      lane: { type: string, default: "" }
+      deploy_id: { type: string, default: "" }
+      result: { type: string, default: "success" }
+      code_approvers: { type: string, default: "" }
+      business_approvers: { type: string, default: "" }
+      result_artifact: { type: string, default: "" }
+
+concurrency:
+  group: audit-log
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  append:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: src/go.mod
+      - run: go build -o "$RUNNER_TEMP/agentops" ./cmd/agentops
+        working-directory: src
+
+      - name: Download analyze result
+        if: inputs.result_artifact != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.result_artifact }}
+          path: result
+
+      - name: Check out audit branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" auditlog
+          cd auditlog
+          if git ls-remote --exit-code --heads origin audit >/dev/null; then
+            git checkout --quiet audit
+          else
+            git checkout --quiet --orphan audit && git rm -rq --cached . && git clean -fdq
+          fi
+          mkdir -p audit
+
+      - name: Append and verify
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          EXTRA=()
+          if [ -f result/result.json ]; then EXTRA=(--result-json result/result.json); fi
+          LOG=auditlog/audit/audit.jsonl
+          "$RUNNER_TEMP/agentops" audit verify --log "$LOG"
+          "$RUNNER_TEMP/agentops" audit append --log "$LOG" \
+            --event "${{ inputs.event }}" --pr "${{ inputs.pr }}" --commit "${{ inputs.commit }}" \
+            --author "${{ inputs.author }}" --branch "${{ inputs.branch }}" \
+            --target-org "${{ inputs.target_org }}" --lane "${{ inputs.lane }}" \
+            --deploy-id "${{ inputs.deploy_id }}" --result "${{ inputs.result }}" \
+            --code-approvers "${{ inputs.code_approvers }}" \
+            --business-approvers "${{ inputs.business_approvers }}" \
+            --run-url "$RUN_URL" "${EXTRA[@]}"
+          "$RUNNER_TEMP/agentops" audit verify --log "$LOG"
+
+      - name: Commit
+        working-directory: auditlog
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add audit/audit.jsonl
+          git commit --quiet -m "audit: ${{ inputs.event }} pr=${{ inputs.pr }} run=${{ github.run_id }}"
+          git push --quiet origin audit

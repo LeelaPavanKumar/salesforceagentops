@@ -1,0 +1,8 @@
+bin/
+.sf/
+.sfdx/
+.delta/
+snapshot/
+*.key
+report.md
+result.json

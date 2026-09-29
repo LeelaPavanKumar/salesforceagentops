@@ -1,0 +1,3 @@
+# Components that live in the org but are not source-tracked here,
+# e.g. managed-package or legacy fields. One "Type:Name" per line.
+# CustomField:Account.Legacy_Region__c

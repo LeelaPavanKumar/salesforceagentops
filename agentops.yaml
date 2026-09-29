@@ -1,0 +1,22 @@
+# agentops pipeline configuration
+apiVersionFloor: 58.0     # warn below this
+apiVersionRetired: 30.0   # block at or below this (Salesforce retired API 21.0-30.0)
+
+# Paths whose changes always need business sign-off (SOX change management).
+soxScoped:
+  - "**/objects/Revenue_Schedule__c/**"
+  - "**/settings/Security.settings-meta.xml"
+  - "**/namedCredentials/**"
+
+# Escalate one lane when a PR is this large.
+maxComponents: 25
+maxLines: 400
+
+# Components that exist in the org but not in this repo ("Type:Name" per line).
+orgInventory: .agentops/org-inventory.txt
+
+agent:
+  model: claude-sonnet-5
+  maxToolCalls: 12
+  maxTokens: 4096
+  timeoutSeconds: 60

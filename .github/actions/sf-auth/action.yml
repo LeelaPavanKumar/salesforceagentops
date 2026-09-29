@@ -1,0 +1,30 @@
+name: sf-auth
+description: Install the Salesforce CLI (+ sfdx-git-delta) and log in with JWT as alias "target".
+inputs:
+  client-id: { required: true, description: Connected app consumer key }
+  jwt-key: { required: true, description: PEM private key contents }
+  username: { required: true, description: Integration user }
+  instance-url: { required: true, description: e.g. https://login.salesforce.com or https://test.salesforce.com }
+  delta-plugin: { required: false, default: "false", description: Install sfdx-git-delta }
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 20
+    - shell: bash
+      run: npm install --global @salesforce/cli@2 >/dev/null
+    - if: inputs.delta-plugin == 'true'
+      shell: bash
+      run: echo y | sf plugins install sfdx-git-delta >/dev/null
+    - shell: bash
+      env:
+        SF_JWT_KEY: ${{ inputs.jwt-key }}
+      run: |
+        umask 077
+        KEY="$RUNNER_TEMP/server.key"
+        printf '%s' "$SF_JWT_KEY" > "$KEY"
+        sf org login jwt --client-id "${{ inputs.client-id }}" --jwt-key-file "$KEY" \
+          --username "${{ inputs.username }}" --instance-url "${{ inputs.instance-url }}" --alias target >/dev/null
+        rm -f "$KEY"
+        echo "Authenticated to $(sf org display --target-org target --json | jq -r .result.instanceUrl)"

@@ -1,0 +1,12 @@
+name: 03-profile-bad-merge
+description: 'Profile edited on two branches and merged by line: duplicate fieldPermissions.'
+changes:
+- status: M
+  path: force-app/main/default/profiles/Finance User.profile-meta.xml
+  lines: 10
+expect:
+  lane: human-in-the-loop
+  blocked: true
+  rules:
+  - PERM001
+  - PERM002

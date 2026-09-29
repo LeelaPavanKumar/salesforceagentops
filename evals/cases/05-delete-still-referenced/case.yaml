@@ -1,0 +1,15 @@
+name: 05-delete-still-referenced
+description: Field deleted but the page layout in the same PR still uses it.
+changes:
+- status: D
+  path: force-app/main/default/objects/Invoice__c/fields/Tier__c.field-meta.xml
+  lines: 10
+- status: M
+  path: force-app/main/default/layouts/Invoice__c-Invoice Layout.layout-meta.xml
+  lines: 10
+expect:
+  lane: human-in-the-loop
+  blocked: true
+  rules:
+  - DEL001
+  - DEP002

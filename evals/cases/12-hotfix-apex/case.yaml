@@ -1,0 +1,14 @@
+name: 12-hotfix-apex
+description: Clean Apex fix sent straight to main as a hotfix.
+hotfix: true
+changes:
+- status: M
+  path: force-app/main/default/classes/InvoiceService.cls
+  lines: 10
+- status: M
+  path: force-app/main/default/classes/InvoiceServiceTest.cls
+  lines: 10
+expect:
+  lane: human-in-the-loop
+  blocked: false
+  rules: []

@@ -1,0 +1,92 @@
+# Restores the org versions saved before a promote run, and deletes the
+# components that run added. Gated by the same Environment as the deploy.
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Run ID of the promote workflow to roll back
+        required: true
+      target:
+        description: Org to roll back
+        type: choice
+        options: [qa, uat, production]
+        required: true
+      reason:
+        description: Why (goes into the job summary and Slack)
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: ${{ inputs.target }}
+    outputs:
+      deploy_id: ${{ steps.deploy.outputs.deploy_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build -o bin/agentops ./cmd/agentops
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: pre-deploy-snapshot
+          path: rollback
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - uses: ./.github/actions/sf-auth
+        with:
+          client-id: ${{ secrets.SF_CLIENT_ID }}
+          jwt-key: ${{ secrets.SF_JWT_KEY }}
+          username: ${{ secrets.SF_USERNAME }}
+          instance-url: ${{ vars.SF_INSTANCE_URL }}
+
+      - name: Plan
+        env:
+          REASON: ${{ inputs.reason }}
+        run: |
+          ./bin/agentops rollback-plan --deployed rollback/deployed-package.xml \
+            --snapshot rollback/snapshot-package.xml --out rollback/destructiveChanges.xml
+          {
+            echo "### Rollback of run ${{ inputs.run_id }} on ${{ inputs.target }}"
+            echo "Reason: $REASON"
+            echo; echo "Restoring:"; grep -o '<members>[^<]*' rollback/snapshot-package.xml | sed 's/<members>/- /' || true
+            echo; echo "Deleting (added by that deploy):"; grep -o '<members>[^<]*' rollback/destructiveChanges.xml | sed 's/<members>/- /' || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy snapshot
+        id: deploy
+        working-directory: rollback
+        run: |
+          ARGS=(--manifest snapshot-package.xml --target-org target --wait 80 --json)
+          if [ "${{ inputs.target }}" = "production" ]; then ARGS+=(--test-level RunLocalTests); fi
+          if grep -q "<types>" destructiveChanges.xml; then ARGS+=(--post-destructive-changes destructiveChanges.xml); fi
+          sf project deploy start "${ARGS[@]}" > deploy.json || true
+          STATUS=$(jq -r '.result.status // .status' deploy.json)
+          echo "deploy_id=$(jq -r '.result.id // empty' deploy.json)" >> "$GITHUB_OUTPUT"
+          echo "Rollback deploy: $STATUS" >> "$GITHUB_STEP_SUMMARY"
+          [ "$STATUS" = "Succeeded" ]
+
+  audit:
+    needs: rollback
+    if: always()
+    uses: ./.github/workflows/audit-append.yml
+    permissions:
+      contents: write
+      actions: read
+    with:
+      event: rollback
+      commit: ${{ github.sha }}
+      author: ${{ github.actor }}
+      branch: ${{ inputs.target == 'production' && 'main' || inputs.target }}
+      target_org: ${{ inputs.target }}
+      deploy_id: ${{ needs.rollback.outputs.deploy_id }}
+      result: ${{ needs.rollback.result == 'success' && 'success' || 'failure' }}

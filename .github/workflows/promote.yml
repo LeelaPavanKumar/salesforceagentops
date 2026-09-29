@@ -1,0 +1,228 @@
+# Promotes a merged branch to its org: qa -> QA org, uat -> UAT org, main -> production.
+#
+#   validate  (Environment "<org>-validate": holds org secrets, branch-restricted, no reviewers)
+#     delta manifest -> lane -> pre-deploy snapshot -> check-only deploy with tests
+#   deploy    (Environment "<org>": required business reviewers for uat/production)
+#     quick-deploys the exact validated job ID after sign-off
+#   audit     hash-chained evidence entry
+#   back-promote  after a production hotfix, opens PRs main -> uat/qa/int
+name: promote
+
+on:
+  push:
+    branches: [qa, uat, main]
+
+concurrency:
+  group: promote-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+env:
+  ORG: ${{ github.ref_name == 'main' && 'production' || github.ref_name }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: ${{ github.ref_name == 'main' && 'production' || github.ref_name }}-validate
+    outputs:
+      has_changes: ${{ steps.delta.outputs.has_changes }}
+      job_id: ${{ steps.validate.outputs.job_id }}
+      lane: ${{ steps.lane.outputs.lane }}
+      risk: ${{ steps.lane.outputs.risk }}
+      pr: ${{ steps.pr.outputs.pr }}
+      author: ${{ steps.pr.outputs.author }}
+      code_approvers: ${{ steps.pr.outputs.code_approvers }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build -o bin/agentops ./cmd/agentops
+
+      - uses: ./.github/actions/sf-auth
+        with:
+          client-id: ${{ secrets.SF_CLIENT_ID }}
+          jwt-key: ${{ secrets.SF_JWT_KEY }}
+          username: ${{ secrets.SF_USERNAME }}
+          instance-url: ${{ vars.SF_INSTANCE_URL }}
+          delta-plugin: "true"
+
+      - name: Delta manifest
+        id: delta
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          FROM="$BEFORE"
+          if [ -z "$FROM" ] || [ "$FROM" = "0000000000000000000000000000000000000000" ]; then FROM="HEAD~1"; fi
+          echo "from=$FROM" >> "$GITHUB_OUTPUT"
+          mkdir -p .delta
+          sf sgd source delta --from "$FROM" --to HEAD --output-dir .delta >/dev/null
+          if grep -q "<types>" .delta/package/package.xml || grep -q "<types>" .delta/destructiveChanges/destructiveChanges.xml; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            echo "No Salesforce metadata changed; nothing to promote." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Lane (same rules as the PR gate)
+        id: lane
+        if: steps.delta.outputs.has_changes == 'true'
+        run: ./bin/agentops analyze --base "${{ steps.delta.outputs.from }}" --head HEAD --out-md report.md --out-json result.json
+
+      - name: Source PR and code approvers
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number // 0')
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+          if [ "$PR" != "0" ]; then
+            echo "author=$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq .user.login)" >> "$GITHUB_OUTPUT"
+            echo "code_approvers=$(gh api "repos/${{ github.repository }}/pulls/$PR/reviews" \
+              --jq '[.[] | select(.state=="APPROVED") | .user.login] | unique | join(",")')" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pre-deploy snapshot (for rollback)
+        if: steps.delta.outputs.has_changes == 'true'
+        run: |
+          mkdir -p rollback/snapshot
+          # Current org versions of everything this deploy touches. New
+          # components do not exist yet and are simply absent.
+          sf project retrieve start --manifest .delta/package/package.xml --target-org target \
+            --output-dir rollback/snapshot --ignore-conflicts --json > rollback/retrieve.json || true
+          cp .delta/package/package.xml rollback/deployed-package.xml
+          cd rollback
+          echo '{"packageDirectories":[{"path":"snapshot","default":true}],"sourceApiVersion":"62.0"}' > sfdx-project.json
+          if [ -n "$(find snapshot -type f | head -1)" ]; then
+            sf project generate manifest --source-dir snapshot --output-dir . --name snapshot-package.xml >/dev/null
+          else
+            printf '<?xml version="1.0" encoding="UTF-8"?>\n<Package xmlns="http://soap.sforce.com/2006/04/metadata">\n    <version>62.0</version>\n</Package>\n' > snapshot-package.xml
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: steps.delta.outputs.has_changes == 'true'
+        with:
+          name: pre-deploy-snapshot
+          path: rollback/
+          retention-days: 90
+
+      - name: Check-only deploy with tests
+        id: validate
+        if: steps.delta.outputs.has_changes == 'true'
+        run: |
+          ARGS=(--manifest .delta/package/package.xml --target-org target --test-level RunLocalTests --wait 80 --json)
+          if grep -q "<types>" .delta/destructiveChanges/destructiveChanges.xml; then
+            ARGS+=(--post-destructive-changes .delta/destructiveChanges/destructiveChanges.xml)
+          fi
+          set +e
+          sf project deploy validate "${ARGS[@]}" > validate.json
+          set -e
+          STATUS=$(jq -r '.result.status // .status' validate.json)
+          JOB_ID=$(jq -r '.result.id // empty' validate.json)
+          echo "job_id=$JOB_ID" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Validation against $ORG: $STATUS"
+            echo "Job ID: \`$JOB_ID\`"
+            jq -r '.result.details.componentFailures // [] | if type=="object" then [.] else . end | .[] | "- \(.componentType) \(.fullName): \(.problem)"' validate.json
+            jq -r '.result.details.runTestResult.failures // [] | if type=="object" then [.] else . end | .[] | "- Test \(.name).\(.methodName): \(.message)"' validate.json
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$STATUS" = "Succeeded" ]
+
+      - name: Ask for business sign-off in Slack
+        if: steps.delta.outputs.has_changes == 'true' && env.ORG != 'qa'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          [ -z "$SLACK_WEBHOOK_URL" ] && { echo "No Slack webhook configured"; exit 0; }
+          ./bin/agentops notify \
+            --title "${{ github.ref_name }} -> $ORG (PR #${{ steps.pr.outputs.pr }})" \
+            --lane "${{ steps.lane.outputs.lane }}" --risk "${{ steps.lane.outputs.risk }}" \
+            --summary "Validated with tests. Job ${{ steps.validate.outputs.job_id }}. Approve to deploy." \
+            --approve-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --pr-url "${{ github.server_url }}/${{ github.repository }}/pull/${{ steps.pr.outputs.pr }}"
+
+  deploy:
+    needs: validate
+    if: needs.validate.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Required reviewers (business owners) + prevent self-review on uat and production.
+    environment: ${{ github.ref_name == 'main' && 'production' || github.ref_name }}
+    outputs:
+      deploy_id: ${{ steps.deploy.outputs.deploy_id }}
+      business_approvers: ${{ steps.approvers.outputs.business_approvers }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/sf-auth
+        with:
+          client-id: ${{ secrets.SF_CLIENT_ID }}
+          jwt-key: ${{ secrets.SF_JWT_KEY }}
+          username: ${{ secrets.SF_USERNAME }}
+          instance-url: ${{ vars.SF_INSTANCE_URL }}
+
+      - name: Record business approvers
+        id: approvers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "business_approvers=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/approvals" \
+            --jq '[.[] | select(.state=="approved") | .user.login] | unique | join(",")')" >> "$GITHUB_OUTPUT"
+
+      - name: Quick deploy the validated job
+        id: deploy
+        run: |
+          sf project deploy quick --job-id "${{ needs.validate.outputs.job_id }}" --target-org target --wait 60 --json > deploy.json || true
+          STATUS=$(jq -r '.result.status // .status' deploy.json)
+          echo "deploy_id=$(jq -r '.result.id // empty' deploy.json)" >> "$GITHUB_OUTPUT"
+          echo "### Deploy to $ORG: $STATUS" >> "$GITHUB_STEP_SUMMARY"
+          [ "$STATUS" = "Succeeded" ]
+
+  audit:
+    needs: [validate, deploy]
+    if: always() && needs.validate.outputs.has_changes == 'true'
+    uses: ./.github/workflows/audit-append.yml
+    permissions:
+      contents: write
+      actions: read
+    with:
+      event: deploy
+      pr: ${{ needs.validate.outputs.pr }}
+      commit: ${{ github.sha }}
+      author: ${{ needs.validate.outputs.author }}
+      branch: ${{ github.ref_name }}
+      target_org: ${{ github.ref_name == 'main' && 'production' || github.ref_name }}
+      lane: ${{ needs.validate.outputs.lane }}
+      deploy_id: ${{ needs.deploy.outputs.deploy_id }}
+      result: ${{ needs.deploy.result == 'success' && 'success' || 'failure' }}
+      code_approvers: ${{ needs.validate.outputs.code_approvers }}
+      business_approvers: ${{ needs.deploy.outputs.business_approvers }}
+
+  back-promote:
+    needs: deploy
+    if: github.ref_name == 'main' && needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Open back-promotion PRs so lower branches get the hotfix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          for b in uat qa int; do
+            AHEAD=$(gh api "repos/$REPO/compare/$b...main" --jq .ahead_by)
+            OPEN=$(gh pr list --repo "$REPO" --base "$b" --head main --state open --json number --jq length)
+            if [ "$AHEAD" -gt 0 ] && [ "$OPEN" = "0" ]; then
+              gh pr create --repo "$REPO" --base "$b" --head main \
+                --title "Back-promote main -> $b" \
+                --body "Automated back-promotion after production deploy ${{ github.sha }}. Keeps $b in sync with production."
+            fi
+          done

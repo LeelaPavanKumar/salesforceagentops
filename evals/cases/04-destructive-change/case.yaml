@@ -1,0 +1,14 @@
+name: 04-destructive-change
+description: Field deleted with a destructive manifest; nothing still references it.
+changes:
+- status: D
+  path: force-app/main/default/objects/Invoice__c/fields/Tier__c.field-meta.xml
+  lines: 10
+- status: A
+  path: manifest/destructiveChanges.xml
+  lines: 20
+expect:
+  lane: human-in-the-loop
+  blocked: false
+  rules:
+  - DEL001

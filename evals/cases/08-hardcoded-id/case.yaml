@@ -1,0 +1,11 @@
+name: 08-hardcoded-id
+description: Apex assigns a hardcoded user ID that will not exist in production.
+changes:
+- status: M
+  path: force-app/main/default/classes/InvoiceService.cls
+  lines: 10
+expect:
+  lane: ai-assisted
+  blocked: false
+  rules:
+  - APEX002

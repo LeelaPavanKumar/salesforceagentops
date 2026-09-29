@@ -1,0 +1,14 @@
+name: 06-apex-retired-api
+description: Apex class left at API 30.0, which Salesforce has retired.
+changes:
+- status: M
+  path: force-app/main/default/classes/InvoiceService.cls
+  lines: 10
+- status: M
+  path: force-app/main/default/classes/InvoiceService.cls-meta.xml
+  lines: 10
+expect:
+  lane: ai-assisted
+  blocked: true
+  rules:
+  - API001

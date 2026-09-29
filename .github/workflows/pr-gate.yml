@@ -1,0 +1,152 @@
+# Runs on every PR into a pipeline branch.
+#   1. agentops analyze: analyzers -> lane -> Claude review (advisory)
+#   2. sticky PR comment + lane label
+#   3. fails the required check when high-severity findings exist
+#   4. human-in-the-loop lane: waits on the "business-signoff" Environment
+#   5. agentic lane into int: enables auto-merge
+#   6. appends an audit entry
+name: pr-gate
+
+on:
+  pull_request:
+    branches: [int, qa, uat, main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: pr-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      lane: ${{ steps.analyze.outputs.lane }}
+      blocked: ${{ steps.analyze.outputs.blocked }}
+      risk: ${{ steps.analyze.outputs.risk }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go build -o bin/agentops ./cmd/agentops
+
+      - name: Analyze
+        id: analyze
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          AGENT_FLAG=""
+          if [ -n "$ANTHROPIC_API_KEY" ]; then AGENT_FLAG="--agent"; fi
+          # A PR into main from anything other than uat is a hotfix.
+          HOTFIX_FLAG=""
+          if [ "$BASE_REF" = "main" ] && [ "$HEAD_REF" != "uat" ]; then HOTFIX_FLAG="--hotfix"; fi
+          ./bin/agentops analyze \
+            --repo . --base "origin/$BASE_REF" --head HEAD \
+            $AGENT_FLAG $HOTFIX_FLAG \
+            --out-md report.md --out-json result.json
+
+      - name: Post review comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: agentops
+          path: report.md
+
+      - name: Label lane
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          LANE: ${{ steps.analyze.outputs.lane }}
+        run: |
+          for l in agentic ai-assisted human-in-the-loop; do
+            gh label create "lane:$l" --force --color ededed >/dev/null 2>&1 || true
+          done
+          gh pr edit "$PR" \
+            --remove-label lane:agentic --remove-label lane:ai-assisted --remove-label lane:human-in-the-loop \
+            --add-label "lane:$LANE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agentops-result
+          path: |
+            result.json
+            report.md
+
+      - name: Gate on blocking findings
+        if: steps.analyze.outputs.blocked == 'true'
+        run: |
+          echo "::error::High-severity findings block this merge. See the agentops comment on the PR."
+          exit 1
+
+  notify-business:
+    needs: analyze
+    if: needs.analyze.outputs.lane == 'human-in-the-loop' && needs.analyze.outputs.blocked != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Ask for business sign-off in Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          PR_TITLE: ${{ github.event.pull_request.title }} # untrusted: pass via env, never inline
+        if: env.SLACK_WEBHOOK_URL != ''
+        run: |
+          go run ./cmd/agentops notify \
+            --title "PR #${{ github.event.pull_request.number }} -> ${{ github.base_ref }}" \
+            --lane "${{ needs.analyze.outputs.lane }}" --risk "${{ needs.analyze.outputs.risk }}" \
+            --summary "$PR_TITLE" \
+            --approve-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --pr-url "${{ github.event.pull_request.html_url }}"
+
+  # Business sign-off. The "business-signoff" Environment has required
+  # reviewers from the business team and "prevent self-review" on, so the job
+  # waits here until a business owner (not the author) approves.
+  business-signoff:
+    needs: [analyze, notify-business]
+    if: needs.analyze.outputs.lane == 'human-in-the-loop' && needs.analyze.outputs.blocked != 'true'
+    runs-on: ubuntu-latest
+    environment: business-signoff
+    steps:
+      - run: |
+          echo "Business sign-off recorded for PR #${{ github.event.pull_request.number }}"
+
+  auto-merge:
+    needs: analyze
+    if: >-
+      needs.analyze.outputs.lane == 'agentic' && needs.analyze.outputs.blocked != 'true' &&
+      github.base_ref == 'int' && github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Enable auto-merge (merges when required checks pass)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr merge "${{ github.event.pull_request.number }}" --auto --squash --repo "${{ github.repository }}"
+
+  audit:
+    needs: [analyze]
+    if: always() && needs.analyze.result != 'cancelled' && github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/audit-append.yml
+    permissions:
+      contents: write
+      actions: read
+    with:
+      event: analyze
+      pr: ${{ github.event.pull_request.number }}
+      commit: ${{ github.event.pull_request.head.sha }}
+      author: ${{ github.event.pull_request.user.login }}
+      branch: ${{ github.base_ref }}
+      result: ${{ needs.analyze.result }}
+      result_artifact: agentops-result

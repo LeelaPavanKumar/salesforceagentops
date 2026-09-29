@@ -1,0 +1,30 @@
+# CI for the agentops tool itself: unit tests + the seeded eval suite.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    paths: ["cmd/**", "internal/**", "evals/**", "go.mod", "go.sum", ".github/workflows/ci.yml"]
+  pull_request:
+    paths: ["cmd/**", "internal/**", "evals/**", "go.mod", "go.sum", ".github/workflows/ci.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race ./...
+      - name: Eval suite (deterministic, no API key)
+        run: |
+          go build -o bin/agentops ./cmd/agentops
+          ./bin/agentops eval --dir evals/cases --out-md eval.md
+      - name: Publish eval table
+        if: always()
+        run: cat eval.md >> "$GITHUB_STEP_SUMMARY" || true

@@ -1,0 +1,11 @@
+name: 02-permset-missing-field
+description: Permission set grants a field that is not in the PR or the repo.
+changes:
+- status: M
+  path: force-app/main/default/permissionsets/Invoice_Admin.permissionset-meta.xml
+  lines: 10
+expect:
+  lane: human-in-the-loop
+  blocked: true
+  rules:
+  - DEP001

@@ -1,0 +1,16 @@
+name: 13-large-change-escalates
+description: 'Three layouts with 600 changed lines: agentic escalates to AI-assisted.'
+changes:
+- status: M
+  path: force-app/main/default/layouts/Invoice__c-Layout 1.layout-meta.xml
+  lines: 200
+- status: M
+  path: force-app/main/default/layouts/Invoice__c-Layout 2.layout-meta.xml
+  lines: 200
+- status: M
+  path: force-app/main/default/layouts/Invoice__c-Layout 3.layout-meta.xml
+  lines: 200
+expect:
+  lane: ai-assisted
+  blocked: false
+  rules: []
